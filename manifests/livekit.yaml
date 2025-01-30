@@ -1,0 +1,355 @@
+# Redis for the backend of LiveKit
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  labels:
+    app: redis
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: redis-config
+            items:
+            - key: redis-config
+              path: redis.conf
+      containers:
+        - name: redis
+          image: redis
+          command:
+            - redis-server
+            - "/redis-master/redis.conf"
+          env:
+          - name: MASTER
+            value: "true"
+          ports:
+          - containerPort: 6379
+          volumeMounts:
+            - mountPath: /redis-master-data
+              name: data
+            - mountPath: /redis-master
+              name: config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: redis
+  name: redis
+spec:
+  ports:
+    - port: 6379
+      protocol: TCP
+      targetPort: 6379
+  selector:
+    app: redis
+  clusterIP: None
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+data:
+  redis-config: |
+    bind 0.0.0.0
+---
+# Livekit server
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: livekit-server
+data:
+  config.yaml: |
+    keys:
+      access_token: secret
+    log_level: debug
+    port: 7880
+    redis:
+      address: redis:6379
+    rtc:
+      port_range_end: 60000
+      port_range_start: 50000
+      tcp_port: 7801
+      turn_servers:
+      - credential: pass-1
+        host: 9.223.2.106
+        port: 3478
+        protocol: udp
+        username: user-1
+      use_external_ip: false
+    turn:
+      enabled: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: livekit-server
+  labels:
+    app.kubernetes.io/name: livekit-server
+    app.kubernetes.io/instance: livekit
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: 7880
+      protocol: TCP
+      name: http
+    - port: 7801
+      targetPort: 7801
+      protocol: TCP
+      name: rtc-tcp
+  selector:
+    app.kubernetes.io/name: livekit-server
+    app.kubernetes.io/instance: livekit
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: livekit-server
+  labels:
+    app.kubernetes.io/name: livekit-server
+    app.kubernetes.io/instance: livekit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: livekit-server
+      app.kubernetes.io/instance: livekit
+  template:
+    metadata:
+      annotations:
+        linkerd.io/inject: disabled
+        sidecar.istio.io/inject: "false"
+      labels:
+        app.kubernetes.io/name: livekit-server
+        app.kubernetes.io/instance: livekit
+    spec:
+      terminationGracePeriodSeconds: 18000 # 5 hours
+      containers:
+        - name: livekit-server
+          image: "livekit/livekit-server:v1.8.2"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: LIVEKIT_CONFIG
+              valueFrom:
+                configMapKeyRef:
+                  name: livekit-server
+                  key: config.yaml
+          ports:
+            - name: http
+              containerPort: 7880
+              protocol: TCP
+            - name: rtc-tcp
+              containerPort: 7801
+              protocol: TCP
+---
+# Demo Token Service for LiveKit auth
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: lk-token
+  name: lk-token
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lk-token
+  template:
+    metadata:
+      labels:
+        app: lk-token
+    spec:
+      containers:
+      - name: livekit-token-generator
+        image: megzo/livekit-token-generator:latest
+        env:
+        - name: APIKEY
+          value: access_token
+        - name: APISECRET
+          value: secret
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lk-token
+  labels:
+    app: lk-token
+spec:
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app: lk-token
+---
+# LiveKit Agents Playground UI
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: agents-ui
+  name: agents-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agents-ui
+  template:
+    metadata:
+      labels:
+        app: agents-ui
+    spec:
+      containers:
+      - name: agents-ui
+        image: megzo/livekit-agents-ui:0.1
+        imagePullPolicy: Always
+        #command: ["yarn"]
+        #args: ["dev"]
+        env:
+        - name: NEXT_PUBLIC_LIVEKIT_URL
+          valueFrom:
+            secretKeyRef:
+              name: livekit-agents-secrets
+              key: LIVEKIT_URL
+        - name: LIVEKIT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: livekit-agents-secrets
+              key: LIVEKIT_API_KEY
+        - name: LIVEKIT_API_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: livekit-agents-secrets
+              key: LIVEKIT_API_SECRET
+        ports:
+        - containerPort: 3000
+        volumeMounts:
+        - name: env-file
+          mountPath: /app/.env.local
+          subPath: .env.local
+      volumes:
+      - name: env-file
+        secret:
+          secretName: livekit-agents-secrets
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agents-ui
+  labels:
+    app: agents-ui
+spec:
+  ports:
+    - port: 80
+      targetPort: 3000
+      protocol: TCP
+      name: http
+  selector:
+    app: agents-ui
+---
+# LiveKit AI Voice Assistant
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: voice-agent
+  labels:
+    app: voice-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: voice-agent
+  template:
+    metadata:
+      labels:
+        app: voice-agent
+    spec:
+      containers:
+      - name: agent
+        image: megzo/livekit-voice-agent:0.3
+        command: ["python", "voice-assistant-azure.py", "dev"]
+        env:
+        - name: LIVEKIT_URL
+          value: ws://livekit-server:443
+        envFrom:
+        - secretRef:
+            name: livekit-agents-secrets
+---
+# Ingress for everything
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: livekit-ingress
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+      - livekit.azure.stunner.cc
+      - agent-ui.azure.stunner.cc
+    secretName: livekit-tls
+  rules:
+  - host: livekit.azure.stunner.cc
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: livekit-server
+            port:
+              number: 443
+      - path: /api/token
+        pathType: Prefix
+        backend:
+          service:
+            name: lk-token
+            port:
+              number: 80
+  - host: agent-ui.azure.stunner.cc
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: agents-ui
+            port:
+              number: 80
+---
+# UDPRoute for STUNner routing
+# Be sure to match the namespaces in the backendRefs
+# This example assumes the LiveKit server is in the default namespace
+apiVersion: stunner.l7mp.io/v1
+kind: UDPRoute
+metadata:
+  name: livekit-agent
+  namespace: stunner
+spec:
+  parentRefs:
+    - name: webrtc-gateway
+  rules:
+    - backendRefs:
+        - name: livekit-server
+          namespace: default
+
+          

@@ -1,0 +1,71 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: stunner-gatewayclass
+spec:
+  controllerName: "stunner.l7mp.io/gateway-operator"
+  parametersRef:
+    group: "stunner.l7mp.io"
+    kind: GatewayConfig
+    name: stunner-gatewayconfig
+    namespace: stunner
+  description: "STUNner is a WebRTC ingress gateway for Kubernetes"
+---
+apiVersion: stunner.l7mp.io/v1
+kind: GatewayConfig
+metadata:
+  name: stunner-gatewayconfig
+  namespace: stunner
+spec:
+  realm: stunner.l7mp.io
+  authType: plaintext
+  userName: "user-1"
+  password: "pass-1"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  annotations:
+    stunner.l7mp.io/enable-mixed-protocol-lb: "true"
+  name: webrtc-gateway
+  namespace: stunner
+spec:
+  gatewayClassName: stunner-gatewayclass
+  listeners:
+    - name: udp-listener
+      port: 3478
+      protocol: UDP
+    - name: tcp-listener
+      port: 3478
+      protocol: TURN-TCP
+    # add these listeners if you need TLS
+    # you'll need a TLS cert in a Secret named stunner-tls
+    #- name: tls-listener
+    #  port: 5349
+    #  protocol: TURN-TLS
+    #  tls:
+    #    certificateRefs:
+    #    - kind: Secret
+    #      name: stunner-tls
+    #      namespace: default
+    #- name: dtls-listener
+    #  port: 5349
+    #  protocol: TURN-DTLS
+    #  tls:
+    #    certificateRefs:
+    #    - kind: Secret
+    #      name: stunner-tls
+    #      namespace: default
+---
+apiVersion: stunner.l7mp.io/v1
+kind: UDPRoute
+metadata:
+  name: stunner-hairpin
+  namespace: stunner
+spec:
+  parentRefs:
+    - name: webrtc-gateway
+  rules:
+    - backendRefs:
+        - name: webrtc-gateway
+          namespace: stunner
