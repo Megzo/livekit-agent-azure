@@ -152,6 +152,8 @@ stringData:
   OPENAI_API_VERSION: 2024-08-01-preview # check Azure AI Foundry at ai.azure.com for the your version 
 ```
 
+The most trickey envs are `AZURE_OPENAI_ENDPOINT` and `OPENAI_API_VERSION`. I could not figure out how to export them using Terraform, so you might have to manually get them from [Azure AI Foundry](https://ai.azure.com).
+
 If everything is ready, just deploy these two file:
 ```
 kubectl apply -f manifests/secret.yaml
